@@ -14,6 +14,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -384,6 +385,34 @@ func getCounterValue(counter prometheus.Counter) float64 {
 
 func read(reader pgmodel.Reader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			err := fmt.Sprintf("HTTP Method %s instead of POST", r.Method)
+			log.Error("msg", "Request error", "err", err)
+			http.Error(w, err, http.StatusBadRequest)
+			return
+		}
+
+		if !strings.Contains(r.Header.Get("Content-Encoding"), "snappy") {
+			err := fmt.Sprintf("non-snappy compressed data got: %s", r.Header.Get("Content-Encoding"))
+			log.Error("msg", "Request error", "err", err)
+			http.Error(w, err, http.StatusBadRequest)
+			return
+		}
+
+		if r.Header.Get("Content-Type") != "application/x-protobuf" {
+			err := "non-protobuf data"
+			log.Error("msg", "Request error", "err", err)
+			http.Error(w, err, http.StatusBadRequest)
+			return
+		}
+
+		if r.Header.Get("X-Prometheus-Remote-Read-Version") == "" {
+			err := "non-Remote-Read"
+			log.Error("msg", "Request error", "err", err)
+			http.Error(w, err, http.StatusBadRequest)
+			return
+		}
+
 		compressed, err := ioutil.ReadAll(r.Body)
 		if err != nil {
 			log.Error("msg", "Read error", "err", err.Error())

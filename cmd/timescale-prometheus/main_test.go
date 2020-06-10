@@ -218,7 +218,7 @@ func TestHealth(t *testing.T) {
 
 			healthHandle := health(mock)
 
-			test := GenerateHandleTester(t, healthHandle)
+			test := GenerateHandleTester(t, healthHandle, false)
 			w := test("GET", strings.NewReader(""))
 
 			if w.Code != c.httpStatus {
@@ -253,7 +253,7 @@ func TestTimeHandler(t *testing.T) {
 
 	handler := timeHandler(mockObserverVec, path, mockHandler)
 
-	test := GenerateHandleTester(t, handler)
+	test := GenerateHandleTester(t, handler, false)
 
 	test("GET", strings.NewReader(""))
 
@@ -334,9 +334,9 @@ func TestRead(t *testing.T) {
 
 			handler := read(mockReader)
 
-			test := GenerateHandleTester(t, handler)
+			test := GenerateHandleTester(t, handler, true)
 
-			w := test("GET", getReader(c.requestBody))
+			w := test("POST", getReader(c.requestBody))
 
 			if w.Code != c.responseCode {
 				t.Errorf("Unexpected HTTP status code received: got %d wanted %d", w.Code, c.responseCode)
@@ -422,7 +422,7 @@ func TestWrite(t *testing.T) {
 
 			handler := write(mock)
 
-			test := GenerateHandleTester(t, handler)
+			test := GenerateHandleTester(t, handler, false)
 
 			w := test("GET", getReader(c.requestBody))
 
@@ -572,7 +572,7 @@ func TestMigrate(t *testing.T) {
 
 type HandleTester func(method string, body io.Reader) *httptest.ResponseRecorder
 
-func GenerateHandleTester(t *testing.T, handleFunc http.Handler) HandleTester {
+func GenerateHandleTester(t *testing.T, handleFunc http.Handler, isRead bool) HandleTester {
 	return func(method string, body io.Reader) *httptest.ResponseRecorder {
 		req, err := http.NewRequest(method, "", body)
 		if err != nil {
@@ -582,6 +582,12 @@ func GenerateHandleTester(t *testing.T, handleFunc http.Handler) HandleTester {
 			"Content-Type",
 			"application/x-www-form-urlencoded; param=value",
 		)
+		req.Header.Add("Content-Encoding", "snappy")
+		req.Header.Set("Content-Type", "application/x-protobuf")
+		if isRead {
+			req.Header.Set("X-Prometheus-Remote-Read-Version", "0.1.0")
+		}
+
 		w := httptest.NewRecorder()
 		handleFunc.ServeHTTP(w, req)
 		return w

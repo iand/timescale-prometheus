@@ -842,6 +842,9 @@ type metricTimeRangeFilter struct {
 type pgxQuerier struct {
 	conn             pgxConn
 	metricTableNames MetricCache
+	// contains [int]labels.Label
+	// TODO replace with a LRU
+	labels sync.Map
 }
 
 // HealthCheck implements the healtchecker interface
@@ -863,7 +866,7 @@ func (q *pgxQuerier) Select(mint int64, maxt int64, sortSeries bool, hints *stor
 		return nil, nil, nil, err
 	}
 
-	ss, warn, err := buildSeriesSet(rows, sortSeries)
+	ss, warn, err := buildSeriesSet(rows, sortSeries, q)
 	return ss, topNode, warn, err
 }
 
@@ -893,7 +896,7 @@ func (q *pgxQuerier) Query(query *prompb.Query) ([]*prompb.TimeSeries, error) {
 	results := make([]*prompb.TimeSeries, 0, len(rows))
 
 	for _, r := range rows {
-		ts, err := buildTimeSeries(r)
+		ts, err := buildTimeSeries(r, q)
 
 		if err != nil {
 			return nil, err
@@ -903,6 +906,93 @@ func (q *pgxQuerier) Query(query *prompb.Query) ([]*prompb.TimeSeries, error) {
 	}
 
 	return results, nil
+}
+
+const GetLabelsSQL = "SELECT (key_value_array($1::int[])).*"
+
+func (q *pgxQuerier) getLabelsForIds(ids []int) (lls []prompb.Label, err error) {
+	lls = make([]prompb.Label, 0, len(ids))
+	var misses []int // TODO we can probably do without a separate slice here
+	for _, id := range ids {
+		l, ok := q.labels.Load(id)
+		label := l.(labels.Label)
+		if ok {
+			lls = append(lls, prompb.Label{Name: label.Name, Value: label.Value})
+		} else {
+			misses = append(misses, id)
+		}
+	}
+	if len(misses) == 0 {
+		return
+	}
+
+	rows, err := q.conn.Query(context.Background(), GetLabelsSQL, misses)
+	if err != nil {
+		return
+	}
+
+	for rows.Next() {
+		var keys []string
+		var vals []string
+		err = rows.Scan(&keys, &vals)
+		if err != nil {
+			return
+		}
+		if len(keys) != len(vals) {
+			return nil, fmt.Errorf("query returned a mismatch in timestamps and values: %d, %d", len(keys), len(vals))
+		}
+		if len(keys) != len(misses) {
+			return nil, fmt.Errorf("query returned wrong number of labels: %d, %d", len(misses), len(keys))
+		}
+
+		for i, id := range misses {
+			q.labels.LoadOrStore(id, labels.Label{Name: keys[i], Value: vals[i]})
+			lls = append(lls, prompb.Label{Name: keys[i], Value: vals[i]})
+		}
+	}
+	return
+}
+
+func (q *pgxQuerier) getLabelsForIds2(ids []int) (lls labels.Labels, err error) {
+	lls = make([]labels.Label, 0, len(ids))
+	var misses []int // TODO we can probably do without a separate slice here
+	for _, id := range ids {
+		label, ok := q.labels.Load(id)
+		if ok {
+			lls = append(lls, label.(labels.Label))
+		} else {
+			misses = append(misses, id)
+		}
+	}
+	if len(misses) == 0 {
+		return
+	}
+
+	rows, err := q.conn.Query(context.Background(), GetLabelsSQL, misses)
+	if err != nil {
+		return
+	}
+
+	for rows.Next() {
+		var keys []string
+		var vals []string
+		err = rows.Scan(&keys, &vals)
+		if err != nil {
+			return
+		}
+		if len(keys) != len(vals) {
+			return nil, fmt.Errorf("query returned a mismatch in timestamps and values: %d, %d", len(keys), len(vals))
+		}
+		if len(keys) != len(misses) {
+			return nil, fmt.Errorf("query returned wrong number of labels: %d, %d", len(misses), len(keys))
+		}
+
+		for i, id := range misses {
+			q.labels.LoadOrStore(id, labels.Label{Name: keys[i], Value: vals[i]})
+			lls = append(lls, labels.Label{Name: keys[i], Value: vals[i]})
+		}
+	}
+	return
 }
 
 func (q *pgxQuerier) getResultRows(startTimestamp int64, endTimestamp int64, hints *storage.SelectHints, path []parser.Node, matchers []*labels.Matcher) ([]pgx.Rows, parser.Node, error) {

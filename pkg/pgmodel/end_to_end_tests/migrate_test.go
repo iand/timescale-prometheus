@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	expectedVersion = 1
+	expectedVersion = 002
 )
 
 func TestMigrate(t *testing.T) {
